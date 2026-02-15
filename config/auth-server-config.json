@@ -1,0 +1,28 @@
+{
+    "version": "1.0",
+    "logging": {
+        "level": -1,
+        "path": "./log/auth-server.log",
+        "max_size_mb": 1024
+    },
+    "server_port": "8080",
+    "https_server_port": "8443",
+    "https_enabled": true,
+    "cert_file": "certs/server.crt",
+    "key_file": "certs/server.key",
+    "metric_port": "7071",
+    "database": {
+        "host": "localhost",
+        "port": 1521,
+        "service": "XE",
+        "user": "system",
+        "password": "",
+        "connection_timeout": "90",
+        "connection_pool": {
+            "max_open": 100,
+            "max_idle": 20,
+            "max_lifetime": 300,
+            "max_idle_lifetime": 60
+        }
+    }
+}
