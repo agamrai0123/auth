@@ -215,13 +215,14 @@ func (s *authServer) Start() {
 		}
 	}()
 
+	// Set Gin to release mode for production (disables debug logging)
+	gin.SetMode(gin.ReleaseMode)
+
 	router := gin.New()
 
-	// SECURITY FIX: Initialize rate limiting
-	// Global limit: 100 requests per second
-	// Per-client limit: 10 requests per second
-	globalLimiter := rate.NewLimiter(100, 10)
-	clientRateLimiter := NewRateLimiter()
+	// SECURITY FIX: Initialize rate limiting from configuration
+	globalLimiter := rate.NewLimiter(rate.Limit(AppConfig.RateLimiting.GlobalRPS), AppConfig.RateLimiting.GlobalBurst)
+	clientRateLimiter := NewRateLimiter(AppConfig.RateLimiting.ClientRPS, AppConfig.RateLimiting.ClientBurst)
 	defer clientRateLimiter.Stop()
 
 	router.Use(

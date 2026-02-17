@@ -23,6 +23,13 @@ type (
 		MaxIdleLifetime int `mapstructure:"max_idle_lifetime"`
 	}
 
+	rate_limiting struct {
+		GlobalRPS   int `mapstructure:"global_rps"`
+		GlobalBurst int `mapstructure:"global_burst"`
+		ClientRPS   int `mapstructure:"client_rps"`
+		ClientBurst int `mapstructure:"client_burst"`
+	}
+
 	database struct {
 		Host           string          `mapstructure:"host"`
 		Port           int             `mapstructure:"port"`
@@ -34,15 +41,16 @@ type (
 	}
 
 	configuration struct {
-		Version         string   `mapstructure:"version,omitempty"`
-		Logging         logging  `mapstructure:"logging"`
-		ServerPort      string   `mapstructure:"server_port"`
-		HTTPSServerPort string   `mapstructure:"https_server_port"`
-		HTTPSEnabled    bool     `mapstructure:"https_enabled"`
-		CertFile        string   `mapstructure:"cert_file"`
-		KeyFile         string   `mapstructure:"key_file"`
-		MetricPort      int      `mapstructure:"metric_port"`
-		Database        database `mapstructure:"database"`
+		Version         string        `mapstructure:"version,omitempty"`
+		Logging         logging       `mapstructure:"logging"`
+		ServerPort      string        `mapstructure:"server_port"`
+		HTTPSServerPort string        `mapstructure:"https_server_port"`
+		HTTPSEnabled    bool          `mapstructure:"https_enabled"`
+		CertFile        string        `mapstructure:"cert_file"`
+		KeyFile         string        `mapstructure:"key_file"`
+		MetricPort      int           `mapstructure:"metric_port"`
+		RateLimiting    rate_limiting `mapstructure:"rate_limiting"`
+		Database        database      `mapstructure:"database"`
 	}
 )
 
@@ -87,11 +95,15 @@ func setDefaults() {
 	viper.SetDefault("version", "1.0.0")
 	viper.SetDefault("server_port", 8080)
 	viper.SetDefault("metric_port", 7071)
-	viper.SetDefault("jwt_secret", "")        // Must be set via env var
-	viper.SetDefault("database.password", "") // Must be set via env var
+	viper.SetDefault("jwt_secret", "")
+	viper.SetDefault("database.password", "")
 	viper.SetDefault("logging.level", 2)
 	viper.SetDefault("logging.path", "./logs/auth-server.log")
 	viper.SetDefault("logging.max_size_mb", 100)
+	viper.SetDefault("rate_limiting.global_rps", 100)
+	viper.SetDefault("rate_limiting.global_burst", 10)
+	viper.SetDefault("rate_limiting.client_rps", 10)
+	viper.SetDefault("rate_limiting.client_burst", 2)
 }
 
 func validateConfiguration() error {

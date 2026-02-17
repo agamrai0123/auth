@@ -13,17 +13,21 @@ import (
 // SECURITY FIX: Rate limiting to prevent DDoS and brute force attacks
 
 type RateLimiter struct {
-	clients map[string]*rate.Limiter
-	mu      sync.RWMutex
-	ticker  *time.Ticker
-	done    chan bool
+	clients     map[string]*rate.Limiter
+	mu          sync.RWMutex
+	ticker      *time.Ticker
+	done        chan bool
+	clientRPS   int
+	clientBurst int
 }
 
-// NewRateLimiter creates a new rate limiter with global and per-client limits
-func NewRateLimiter() *RateLimiter {
+// NewRateLimiter creates a new rate limiter with specified per-client limits
+func NewRateLimiter(clientRPS int, clientBurst int) *RateLimiter {
 	rl := &RateLimiter{
-		clients: make(map[string]*rate.Limiter),
-		done:    make(chan bool),
+		clients:     make(map[string]*rate.Limiter),
+		done:        make(chan bool),
+		clientRPS:   clientRPS,
+		clientBurst: clientBurst,
 	}
 
 	// Clean up old limiters every 10 minutes
@@ -53,15 +57,15 @@ func (rl *RateLimiter) Stop() {
 	close(rl.done)
 }
 
-// getClientLimiter gets or creates a rate limiter for a client (10 req/s per client)
+// getClientLimiter gets or creates a rate limiter for a client based on configured limits
 func (rl *RateLimiter) getClientLimiter(clientID string) *rate.Limiter {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
 	limiter, exists := rl.clients[clientID]
 	if !exists {
-		// 10 requests per second per client, burst of 2
-		limiter = rate.NewLimiter(rate.Limit(10), 2)
+		// Create limiter with configured RPS and burst values
+		limiter = rate.NewLimiter(rate.Limit(rl.clientRPS), rl.clientBurst)
 		rl.clients[clientID] = limiter
 	}
 	return limiter
@@ -88,18 +92,16 @@ func GlobalRateLimitMiddleware(globalLimiter *rate.Limiter) gin.HandlerFunc {
 // PerClientRateLimitMiddleware applies per-client rate limiting (10 req/s per client)
 func PerClientRateLimitMiddleware(rl *RateLimiter) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Extract client ID from request body or use IP as fallback
-		var clientID string
+		// Extract client ID from query parameters first (doesn't consume body)
+		clientID := c.Query("client_id")
 
-		// Try to get from JSON body (for token endpoint)
-		type ClientRequest struct {
-			ClientID string `json:"client_id"`
+		// If not in query, try to extract from Authorization header (X-Client-ID)
+		if clientID == "" {
+			clientID = c.GetHeader("X-Client-ID")
 		}
-		var req ClientRequest
-		if err := c.ShouldBindJSON(&req); err == nil && req.ClientID != "" {
-			clientID = req.ClientID
-		} else {
-			// Fallback to IP address
+
+		// Fallback to IP address if no client_id found in request
+		if clientID == "" {
 			clientID = c.ClientIP()
 		}
 

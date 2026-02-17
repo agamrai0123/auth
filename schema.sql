@@ -31,7 +31,7 @@ CREATE TABLE endpoints (
     scope VARCHAR2(255) NOT NULL,
     method VARCHAR2(10) NOT NULL,
     endpoint_url VARCHAR2(500) NOT NULL,
-    description VARCHAR2(500),
+    description VARCHAR2(500) DEFAULT '',
     active NUMBER(1) DEFAULT 1 CHECK (active IN (0, 1)),
     created_at TIMESTAMP DEFAULT SYSTIMESTAMP,
     CONSTRAINT fk_endpoints_client FOREIGN KEY (client_id) REFERENCES clients(client_id) ON DELETE CASCADE

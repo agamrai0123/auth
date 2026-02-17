@@ -79,12 +79,9 @@ func (as *authServer) revokeToken(revokedToken RevokedToken) error {
 }
 
 func (as *authServer) getTokenInfo(tokenID string) (revoked bool, tokenType string, err error) {
-	log.Trace().Str("token_id", tokenID).Msg("Fetching token info (revoked status + type)")
-
 	// Check token cache first (fast path)
 	cachedToken, found := as.tokenCache.Get(tokenID)
 	if found && cachedToken != nil {
-		log.Debug().Str("token_id", tokenID).Msg("Token found in cache (hit)")
 		return cachedToken.Revoked, cachedToken.TokenType, nil
 	}
 
@@ -102,7 +99,6 @@ func (as *authServer) getTokenInfo(tokenID string) (revoked bool, tokenType stri
 
 	if err := stmt.QueryRowContext(ctx, tokenID).Scan(&revokedInt, &tokenType); err != nil {
 		if err == sql.ErrNoRows {
-			log.Warn().Str("token_id", tokenID).Msg("Token not found in database")
 			return false, "", fmt.Errorf("token %s: not found", tokenID)
 		}
 		log.Error().Err(err).Str("token_id", tokenID).Msg("Failed to fetch token info")
@@ -111,17 +107,14 @@ func (as *authServer) getTokenInfo(tokenID string) (revoked bool, tokenType stri
 
 	revoked = revokedInt == 1
 
-	// Cache the token if it's not revoked (no need to cache revoked tokens long-term)
-	if !revoked {
-		tokenToCache := Token{
-			TokenID:   tokenID,
-			TokenType: tokenType,
-			Revoked:   revoked,
-		}
-		as.tokenCache.Set(tokenID, &tokenToCache)
+	// Cache the token (for both revoked and non-revoked to avoid repeated lookups)
+	tokenToCache := Token{
+		TokenID:   tokenID,
+		TokenType: tokenType,
+		Revoked:   revoked,
 	}
+	as.tokenCache.Set(tokenID, &tokenToCache)
 
-	log.Debug().Str("token_id", tokenID).Bool("revoked", revoked).Str("token_type", tokenType).Msg("Token info fetched successfully")
 	return revoked, tokenType, nil
 }
 

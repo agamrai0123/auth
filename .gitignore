@@ -1,0 +1,46 @@
+# Build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.so.*
+*.dylib
+*.a
+*.o
+*.obj
+
+# Logs
+*.log
+auth.log
+
+# CPU profiles and memory dumps
+*.prof
+*.pprof
+*.trace
+*.out
+
+# Test binaries
+*.test
+*.coverage
+
+# Environment variables
+.env
+.env.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*.swn
+.DS_Store
+
+# Go
+vendor/
+go.sum.bak
+bin/
+
+# Temporary files
+*.tmp
+*.bak
+~*

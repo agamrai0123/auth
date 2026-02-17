@@ -19,8 +19,6 @@ func generateRandomString(length int) string {
 
 // Generate JWT token
 func (as *authServer) generateJWT(client *Clients, tokenType string) (string, *Token, error) {
-	log.Debug().Str("client_id", client.ClientID).Msg("Generating JWT token")
-
 	tokenID := generateRandomString(16)
 	now := time.Now()
 	var expiresAt time.Time
@@ -65,12 +63,12 @@ func (as *authServer) generateJWT(client *Clients, tokenType string) (string, *T
 		Revoked:   false,
 	}
 
-	log.Debug().Str("client_id", client.ClientID).Str("token_id", tokenID).Time("expires_at", expiresAt).Msg("Token created and storing in database")
+	// Add to cache immediately for fast lookup in validate/revoke
+	log.Debug().Str("token_id", tokenID).Str("client_id", client.ClientID).Msg("[DEBUG] Adding token to cache in generateJWT")
+	as.tokenCache.Set(tokenID, &tokenInfo)
 
-	// if err := as.insertToken(tokenInfo); err != nil {
-	// 	log.Error().Err(err).Str("client_id", client.ClientID).Str("token_id", tokenID).Msg("Failed to store token in database")
-	// }
-
+	// Also queue for async batch write to database
+	log.Debug().Str("token_id", tokenID).Msg("[DEBUG] Queuing token for async batch write")
 	as.tokenBatcher.Add(tokenInfo)
 
 	return tokenString, &tokenInfo, nil
@@ -78,7 +76,6 @@ func (as *authServer) generateJWT(client *Clients, tokenType string) (string, *T
 
 // Validate JWT token
 func (as *authServer) validateJWT(tokenString string) (*Claims, error) {
-	log.Debug().Msg("Validating JWT token signature and claims")
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (any, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
@@ -92,16 +89,12 @@ func (as *authServer) validateJWT(tokenString string) (*Claims, error) {
 	}
 
 	if claims, ok := token.Claims.(*Claims); ok && token.Valid {
-		log.Debug().Str("client_id", claims.ClientID).Str("token_id", claims.TokenID).Msg("JWT token signature valid")
-		// Check token revocation status AND get token type in single query
 		revoked, tokenType, err := as.getTokenInfo(claims.TokenID)
 		if err != nil {
-			log.Warn().Err(err).Str("token_id", claims.TokenID).Msg("Failed to fetch token info")
 			return nil, fmt.Errorf("error fetching token info: %v", err)
 		}
 
 		if revoked {
-			log.Warn().Str("client_id", claims.ClientID).Str("token_id", claims.TokenID).Msg("Token has been revoked")
 			return nil, fmt.Errorf("token has been revoked")
 		}
 
@@ -118,7 +111,7 @@ func (as *authServer) validateJWT(tokenString string) (*Claims, error) {
 			// Queue for async processing instead of blocking
 			go func() {
 				if err := as.revokeToken(revokedToken); err != nil {
-					log.Warn().Err(err).Str("token_id", claims.TokenID).Msg("Failed to revoke OTT")
+					// Silent OTT auto-revocation failure
 				}
 			}()
 		}

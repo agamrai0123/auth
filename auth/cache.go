@@ -73,7 +73,6 @@ func (cc *clientCache) GetSize() int {
 }
 
 func (s *authServer) populateClientCache() {
-	log.Info().Msg("populating cache with all active clients")
 	ctx, cancel := context.WithTimeout(s.ctx, 5*time.Minute)
 	defer cancel()
 
@@ -97,7 +96,6 @@ func (s *authServer) populateClientCache() {
 			log.Error().Msgf("failed to retrieve row while populating client cache: %s", err)
 			continue
 		}
-		log.Debug().Msgf("client %v", client)
 		client.AllowedScopes, err = parseStringArray(scope)
 		if err != nil {
 			log.Error().Err(err).Str("client_id", client.ClientID).Msg("Failed to parse allowed scopes")
@@ -108,17 +106,12 @@ func (s *authServer) populateClientCache() {
 	if err = rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error in populating client cache")
 	}
-
-	log.Info().Int("cache_size", s.clientCache.GetSize()).Msg("client cache populated succesfully")
 }
 
 func newEndpointsCache() *endpointCache {
-	ec := &endpointCache{
+	return &endpointCache{
 		cache: make(map[string]*Endpoints),
 	}
-
-	log.Info().Msg("Endpoints cache initialized")
-	return ec
 }
 
 func (ec *endpointCache) Get(endpoint_url string) (*Endpoints, bool) {
@@ -150,10 +143,7 @@ func (ec *endpointCache) Invalidate(endpoint_url string) {
 	ec.mu.Lock()
 	defer ec.mu.Unlock()
 
-	if _, exists := ec.cache[endpoint_url]; exists {
-		delete(ec.cache, endpoint_url)
-		log.Debug().Str("endpoint_url", endpoint_url).Msg("endpoint_url cache entry invalidated")
-	}
+	delete(ec.cache, endpoint_url)
 }
 
 // Clear removes all clients from cache (e.g., during shutdown or restart)
@@ -161,9 +151,7 @@ func (ec *endpointCache) Clear() {
 	ec.mu.Lock()
 	defer ec.mu.Unlock()
 
-	cacheSize := len(ec.cache)
 	ec.cache = make(map[string]*Endpoints)
-	log.Info().Int("cleared_entries", cacheSize).Msg("Endpoints cache cleared")
 }
 
 // GetSize returns current number of entries in cache
@@ -174,7 +162,6 @@ func (ec *endpointCache) GetSize() int {
 }
 
 func (s *authServer) populateEndpointsCache() {
-	log.Info().Msg("populating cache with all active Endpoints")
 	ctx, cancel := context.WithTimeout(s.ctx, 5*time.Minute)
 	defer cancel()
 
@@ -197,15 +184,12 @@ func (s *authServer) populateEndpointsCache() {
 			log.Error().Msgf("failed to retrieve row while populating endpoint cache: %s", err)
 			continue
 		}
-		log.Debug().Msgf("endpoints %v", endpoint)
 		s.endpointCache.Set(endpoint.Url, endpoint)
 	}
 
 	if err = rows.Err(); err != nil {
 		log.Error().Err(err).Msg("rows iteration error in populating endpoint cache")
 	}
-
-	log.Info().Int("cache_size", s.endpointCache.GetSize()).Msg("endpoints cache populated succesfully")
 }
 
 // TokenBatchWriter handles asynchronous batch insertion of tokens to reduce DB load
