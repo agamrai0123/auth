@@ -22,6 +22,7 @@ func (as *authServer) validateClient(clientID, clientSecret string) (*Clients, e
 			log.Error().Msg("Invalid client credentials")
 			return nil, ErrUnauthorizedError("Invalid client credentials")
 		}
+		as.clientCacheHitRate.WithLabelValues("client").Inc()
 		return cachedClient, nil
 	}
 
@@ -65,6 +66,7 @@ func (as *authServer) tokenHandler(c *gin.Context) {
 	var tokenReq TokenRequest
 	if err := json.NewDecoder(c.Request.Body).Decode(&tokenReq); err != nil {
 		logger.Error().Str("request_id", requestID).Err(err).Msg("Failed to decode token request JSON")
+		as.tokenErrorCount.WithLabelValues(tokenType, "decode_error").Inc()
 		as.errorCount.WithLabelValues(string(ErrInvalidRequest), "decode_error").Inc()
 		RespondWithError(c, ErrBadRequest("Invalid JSON format").WithOriginalError(err))
 		return
@@ -72,6 +74,7 @@ func (as *authServer) tokenHandler(c *gin.Context) {
 
 	if err := tokenReq.Validate(); err != nil {
 		logger.Warn().Str("request_id", requestID).Err(err).Msg("Token request validation failed")
+		as.tokenErrorCount.WithLabelValues(tokenType, "validation_error").Inc()
 		as.errorCount.WithLabelValues(string(ErrInvalidRequest), "validation_error").Inc()
 		RespondWithError(c, ErrBadRequest(err.Error()))
 		return
@@ -81,6 +84,7 @@ func (as *authServer) tokenHandler(c *gin.Context) {
 	client, err := as.validateClient(tokenReq.ClientID, tokenReq.ClientSecret)
 	if err != nil {
 		logger.Warn().Str("request_id", requestID).Str("client_id", tokenReq.ClientID).Msg("Client validation failed")
+		as.tokenErrorCount.WithLabelValues(tokenType, "invalid_credentials").Inc()
 		as.errorCount.WithLabelValues(string(ErrUnauthorized), "invalid_credentials").Inc()
 		RespondWithError(c, ErrUnauthorizedError("Invalid client credentials"))
 		return
@@ -89,6 +93,7 @@ func (as *authServer) tokenHandler(c *gin.Context) {
 	// validate grant type
 	if err := as.validateGrantType(tokenReq.GrantType); err != nil {
 		logger.Warn().Str("request_id", requestID).Str("grant_type", tokenReq.GrantType).Msg("Invalid grant type")
+		as.tokenErrorCount.WithLabelValues(tokenType, "invalid_grant_type").Inc()
 		as.errorCount.WithLabelValues(string(ErrInvalidRequest), "invalid_grant_type").Inc()
 		RespondWithError(c, ErrBadRequest("Unsupported grant type"))
 		return
@@ -97,6 +102,7 @@ func (as *authServer) tokenHandler(c *gin.Context) {
 	token, tokenID, err := as.generateJWT(client, tokenType)
 	if err != nil {
 		logger.Error().Str("request_id", requestID).Str("client_id", tokenReq.ClientID).Err(err).Msg("Failed to generate JWT token")
+		as.tokenErrorCount.WithLabelValues(tokenType, "generation_error").Inc()
 		RespondWithError(c, ErrInternalServerError("Failed to generate token").WithOriginalError(err))
 		return
 	}
@@ -177,22 +183,31 @@ func (as *authServer) ottHandler(c *gin.Context) {
 
 // Validate token handler
 func (as *authServer) validateHandler(c *gin.Context) {
+	start := time.Now()
+	tokenType := "N" // default token type
+
 	requestURL := c.Request.Header.Get("X-Forwarded-For")
 	if requestURL == "" {
+		as.validateTokenRequestsCount.WithLabelValues(tokenType).Inc()
+		as.validateTokenErrorCount.WithLabelValues(tokenType, "missing_endpoint").Inc()
 		RespondWithError(c, ErrBadRequest("Missing X-Forwarded-For header (resource endpoint)"))
 		return
 	}
+
+	as.validateTokenRequestsCount.WithLabelValues(tokenType).Inc()
 
 	var requestedScope string
 	var err error
 	if cachedEndpoint, found := as.endpointCache.Get(requestURL); found {
 		log.Info().Str("endpoint_url", requestURL).Msg("[CACHE HIT] Endpoint found in cache")
+		as.endpointCacheHitRate.WithLabelValues("endpoint").Inc()
 		requestedScope = cachedEndpoint.Scope
 	} else {
 		log.Warn().Str("endpoint_url", requestURL).Msg("[CACHE MISS] Endpoint not in cache, querying DB")
 		requestedScope, err = as.getScopeForEndpoint(requestURL)
 		if err != nil {
 			log.Error().Str("endpoint_url", requestURL).Err(err).Msg("Failed to get scope for endpoint")
+			as.validateTokenErrorCount.WithLabelValues(tokenType, "scope_lookup_error").Inc()
 			RespondWithError(c, ErrUnauthorizedError("Unauthorized scope for endpoint"))
 			return
 		}
@@ -201,12 +216,14 @@ func (as *authServer) validateHandler(c *gin.Context) {
 
 	authHeader := c.Request.Header.Get("Authorization")
 	if authHeader == "" {
+		as.validateTokenErrorCount.WithLabelValues(tokenType, "missing_auth_header").Inc()
 		RespondWithError(c, ErrUnauthorizedError("Missing Authorization header"))
 		return
 	}
 
 	tokenString := strings.TrimPrefix(authHeader, "Bearer ")
 	if tokenString == authHeader {
+		as.validateTokenErrorCount.WithLabelValues(tokenType, "invalid_bearer_format").Inc()
 		RespondWithError(c, ErrUnauthorizedError("Bearer token required"))
 		return
 	}
@@ -214,22 +231,25 @@ func (as *authServer) validateHandler(c *gin.Context) {
 	// Validate token
 	claims, err := as.validateJWT(tokenString)
 	if err != nil {
+		as.validateTokenErrorCount.WithLabelValues(tokenType, "invalid_token").Inc()
 		RespondWithError(c, ErrUnauthorizedError("Invalid or expired token").WithOriginalError(err))
 		return
 	}
 
 	// Token type is now available in claims
-	tokenType := claims.TokenType
+	tokenType = claims.TokenType
 
 	log.Info().Str("requested_scope", requestedScope).Strs("token_scopes", claims.Scopes).Msg("[VALIDATION] Checking if requested scope in token scopes")
 
 	if !slices.Contains(claims.Scopes, requestedScope) {
+		as.validateTokenErrorCount.WithLabelValues(tokenType, "scope_mismatch").Inc()
 		RespondWithError(c, ErrForbiddenError("Resource not in token scopes"))
 		return
 	}
 
 	// Success - increment metrics
 	as.validateTokenSuccessCount.WithLabelValues(tokenType).Inc()
+	as.validateTokenLatency.WithLabelValues(tokenType).Observe(float64(time.Since(start).Seconds()))
 
 	c.Header("Content-Type", "application/json")
 	encoder := json.NewEncoder(c.Writer)
@@ -249,6 +269,7 @@ func (as *authServer) revokeHandler(c *gin.Context) {
 	requestID := GetRequestID(c)
 	if c.Request.Method != http.MethodPost {
 		logger.Warn().Str("request_id", requestID).Str("method", c.Request.Method).Msg("Invalid HTTP method for revoke endpoint")
+		as.revokeErrorCount.WithLabelValues("revoke", "invalid_method").Inc()
 		c.String(http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
@@ -259,6 +280,7 @@ func (as *authServer) revokeHandler(c *gin.Context) {
 	authHeader := c.Request.Header.Get("Authorization")
 	if authHeader == "" {
 		logger.Error().Str("request_id", requestID).Msg("Missing Authorization header for token revocation")
+		as.revokeErrorCount.WithLabelValues("revoke", "missing_auth_header").Inc()
 		RespondWithError(c, ErrUnauthorizedError("Authorization header required"))
 		return
 	}
@@ -266,6 +288,7 @@ func (as *authServer) revokeHandler(c *gin.Context) {
 	tokenString := strings.TrimPrefix(authHeader, "Bearer ")
 	if tokenString == authHeader {
 		logger.Error().Str("request_id", requestID).Msg("Invalid Bearer token format for revocation")
+		as.revokeErrorCount.WithLabelValues("revoke", "invalid_bearer_format").Inc()
 		RespondWithError(c, ErrUnauthorizedError("Bearer token required"))
 		return
 	}
@@ -274,6 +297,7 @@ func (as *authServer) revokeHandler(c *gin.Context) {
 	claims, err := as.validateJWT(tokenString)
 	if err != nil {
 		logger.Error().Str("request_id", requestID).Err(err).Msg("JWT token validation failed during revocation")
+		as.revokeErrorCount.WithLabelValues("revoke", "invalid_token").Inc()
 		RespondWithError(c, ErrUnauthorizedError("Invalid or expired token").WithOriginalError(err))
 		return
 	}
@@ -287,6 +311,7 @@ func (as *authServer) revokeHandler(c *gin.Context) {
 
 	if err := as.revokeToken(revokedToken); err != nil {
 		logger.Error().Str("request_id", requestID).Str("client_id", claims.ClientID).Str("token_id", claims.TokenID).Err(err).Msg("Failed to revoke token")
+		as.revokeErrorCount.WithLabelValues("revoke", "revocation_error").Inc()
 		RespondWithError(c, ErrInternalServerError("Failed to revoke token").WithOriginalError(err))
 		return
 	}
@@ -301,6 +326,7 @@ func (as *authServer) revokeHandler(c *gin.Context) {
 		"message": "Token revoked successfully",
 	}); err != nil {
 		logger.Error().Str("request_id", requestID).Err(err).Msg("Failed to encode revocation response")
+		as.revokeErrorCount.WithLabelValues("revoke", "encoding_error").Inc()
 		c.AbortWithError(http.StatusBadRequest, err)
 	}
 }

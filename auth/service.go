@@ -208,10 +208,19 @@ func (s *authServer) Start() {
 	metricReport.Handle("/auth-server/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{Registry: reg}))
 
 	go func() {
-		err := http.ListenAndServe(":"+strconv.Itoa(AppConfig.MetricPort), metricReport)
-		log.Info().Msgf("listening on %d", AppConfig.MetricPort)
-		if err != nil {
-			log.Error().Msgf("error listening on port %d", AppConfig.MetricPort)
+		metricsAddr := ":" + strconv.Itoa(AppConfig.MetricPort)
+		if AppConfig.HTTPSEnabled && AppConfig.CertFile != "" && AppConfig.KeyFile != "" {
+			log.Info().Msgf("listening on HTTPS metrics port %d", AppConfig.MetricPort)
+			err := http.ListenAndServeTLS(metricsAddr, AppConfig.CertFile, AppConfig.KeyFile, metricReport)
+			if err != nil && err != http.ErrServerClosed {
+				log.Error().Err(err).Msgf("error listening on HTTPS metrics port %d", AppConfig.MetricPort)
+			}
+		} else {
+			log.Info().Msgf("listening on HTTP metrics port %d (HTTPS not enabled)", AppConfig.MetricPort)
+			err := http.ListenAndServe(metricsAddr, metricReport)
+			if err != nil && err != http.ErrServerClosed {
+				log.Error().Err(err).Msgf("error listening on metrics port %d", AppConfig.MetricPort)
+			}
 		}
 	}()
 
