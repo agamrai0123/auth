@@ -64,11 +64,9 @@ func (as *authServer) generateJWT(client *Clients, tokenType string) (string, *T
 	}
 
 	// Add to cache immediately for fast lookup in validate/revoke
-	log.Debug().Str("token_id", tokenID).Str("client_id", client.ClientID).Msg("[DEBUG] Adding token to cache in generateJWT")
 	as.tokenCache.Set(tokenID, &tokenInfo)
 
 	// Also queue for async batch write to database
-	log.Debug().Str("token_id", tokenID).Msg("[DEBUG] Queuing token for async batch write")
 	as.tokenBatcher.Add(tokenInfo)
 
 	return tokenString, &tokenInfo, nil

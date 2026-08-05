@@ -39,36 +39,48 @@ func newDbClient(url string) (*sql.DB, error) {
 	return db, nil
 }
 
+// prepareStatements prepares and caches the statements used on every request's
+// hot path once, at startup, instead of preparing (and closing) a fresh
+// statement on every call.
+func (as *authServer) prepareStatements() error {
+	var err error
+
+	if as.stmtClientByID, err = as.db.Prepare(
+		"SELECT client_id, client_secret, access_token_ttl, allowed_scopes FROM clients WHERE client_id = :1"); err != nil {
+		return fmt.Errorf("failed to prepare clientByID statement: %w", err)
+	}
+
+	if as.stmtGetTokenInfo, err = as.db.Prepare(
+		"SELECT revoked, token_type FROM tokens WHERE token_id = :1"); err != nil {
+		return fmt.Errorf("failed to prepare getTokenInfo statement: %w", err)
+	}
+
+	if as.stmtGetScopeForEndpt, err = as.db.Prepare(
+		"SELECT scope from endpoints where endpoint_url=:1 AND active=1"); err != nil {
+		return fmt.Errorf("failed to prepare getScopeForEndpoint statement: %w", err)
+	}
+
+	if as.stmtRevokeToken, err = as.db.Prepare(
+		"UPDATE tokens SET revoked = 1, revoked_at = :1 WHERE token_id = :2"); err != nil {
+		return fmt.Errorf("failed to prepare revokeToken statement: %w", err)
+	}
+
+	log.Info().Msg("prepared statements initialized")
+	return nil
+}
+
+// revokeToken is on the security-critical path: it must complete synchronously
+// and durably before returning, since callers use it to kill a token they
+// believe is compromised or misused. It's a single statement, so no explicit
+// transaction is needed - that would only add BEGIN/COMMIT round trips.
 func (as *authServer) revokeToken(revokedToken RevokedToken) error {
 	log.Trace().Msg("in revokeToken function")
 	ctx, cancel := context.WithTimeout(as.ctx, 5*time.Second)
 	defer cancel()
 
-	// Begin a Tx for making transaction requests.
-	tx, err := as.db.BeginTx(ctx, nil)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to begin transaction for token revocation")
-		return err
-	}
-	defer tx.Rollback()
-
-	query := "UPDATE tokens SET revoked = 1, revoked_at = :1 WHERE token_id = :2"
-	stmt, err := tx.PrepareContext(ctx, query)
-	if err != nil {
-		log.Error().Err(err).Msg("Failed to prepare revoke token statement")
-		return fmt.Errorf("failed to prepare revoke statement: %w", err)
-	}
-	defer stmt.Close()
-
-	if _, err := stmt.ExecContext(ctx, revokedToken.RevokedAt, revokedToken.TokenID); err != nil {
+	if _, err := as.stmtRevokeToken.ExecContext(ctx, revokedToken.RevokedAt, revokedToken.TokenID); err != nil {
 		log.Error().Err(err).Str("token_id", revokedToken.TokenID).Msg("Failed to revoke token")
 		return err
-	}
-
-	// Commit the transaction.
-	if err = tx.Commit(); err != nil {
-		log.Error().Err(err).Msg("Failed to commit token revocation transaction")
-		return fmt.Errorf("failed to commit revocation: %w", err)
 	}
 
 	// Invalidate token from cache since it's now revoked
@@ -89,15 +101,7 @@ func (as *authServer) getTokenInfo(tokenID string) (revoked bool, tokenType stri
 	ctx, cancel := context.WithTimeout(as.ctx, 3*time.Second)
 	defer cancel()
 
-	query := "SELECT revoked, token_type FROM tokens WHERE token_id = :1"
-	stmt, err := as.db.PrepareContext(ctx, query)
-	if err != nil {
-		log.Error().Err(err).Str("token_id", tokenID).Msg("Failed to prepare token info query")
-		return false, "", fmt.Errorf("failed to prepare token info query: %w", err)
-	}
-	defer stmt.Close()
-
-	if err := stmt.QueryRowContext(ctx, tokenID).Scan(&revokedInt, &tokenType); err != nil {
+	if err := as.stmtGetTokenInfo.QueryRowContext(ctx, tokenID).Scan(&revokedInt, &tokenType); err != nil {
 		if err == sql.ErrNoRows {
 			return false, "", fmt.Errorf("token %s: not found", tokenID)
 		}
@@ -132,14 +136,7 @@ func (as *authServer) getScopeForEndpoint(endpoint_url string) (string, error) {
 	ctx, cancel := context.WithTimeout(as.ctx, 5*time.Second)
 	defer cancel()
 
-	query := "SELECT scope from endpoints where endpoint_url=:1 AND active=TRUE"
-	stmt, err := as.db.PrepareContext(ctx, query)
-	if err != nil {
-		return "", err
-	}
-	defer stmt.Close()
-
-	if err := stmt.QueryRowContext(ctx, endpoint_url).Scan(&scope); err != nil {
+	if err := as.stmtGetScopeForEndpt.QueryRowContext(ctx, endpoint_url).Scan(&scope); err != nil {
 		if err == sql.ErrNoRows {
 			return scope, fmt.Errorf("clientByID %s: no such client", endpoint_url)
 		}
@@ -158,14 +155,7 @@ func (as *authServer) clientByID(clientID string) (*Clients, error) {
 	var scope string
 	var err error
 
-	query := "SELECT client_id, client_secret, access_token_ttl, allowed_scopes FROM clients WHERE client_id = :1"
-	stmt, err := as.db.PrepareContext(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-	defer stmt.Close()
-
-	if err := stmt.QueryRowContext(ctx, clientID).Scan(&client.ClientID, &client.ClientSecret, &client.AccessTokenTTL, &scope); err != nil {
+	if err := as.stmtClientByID.QueryRowContext(ctx, clientID).Scan(&client.ClientID, &client.ClientSecret, &client.AccessTokenTTL, &scope); err != nil {
 		if err == sql.ErrNoRows {
 			log.Warn().Str("client_id", clientID).Msg("Client not found in database")
 			return nil, fmt.Errorf("clientByID %s: no such client", clientID)

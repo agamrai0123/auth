@@ -23,6 +23,13 @@ type authServer struct {
 	tokenCache    *tokenCache
 	tokenBatcher  *TokenBatchWriter // Batch token writer for async writes
 
+	// Prepared statements, created once at startup and reused for the life of
+	// the connection pool instead of being prepared/closed on every call.
+	stmtClientByID       *sql.Stmt
+	stmtGetTokenInfo     *sql.Stmt
+	stmtGetScopeForEndpt *sql.Stmt
+	stmtRevokeToken      *sql.Stmt
+
 	// token metrics
 	tokenRequestsCount      *prometheus.CounterVec
 	tokenSuccessCount       *prometheus.CounterVec

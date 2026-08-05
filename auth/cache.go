@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"database/sql"
 	"sync"
 	"time"
 
@@ -165,7 +166,7 @@ func (s *authServer) populateEndpointsCache() {
 	ctx, cancel := context.WithTimeout(s.ctx, 5*time.Minute)
 	defer cancel()
 
-	query := `SELECT client_id, scope, method, endpoint_url, description, active FROM endpoints`
+	query := `SELECT client_id, scope, method, endpoint_url, description, active FROM endpoints WHERE active = 1`
 
 	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
@@ -180,10 +181,12 @@ func (s *authServer) populateEndpointsCache() {
 
 	for rows.Next() {
 		endpoint := &Endpoints{}
-		if err = rows.Scan(&endpoint.ClientID, &endpoint.Scope, &endpoint.Method, &endpoint.Url, &endpoint.Description, &endpoint.Active); err != nil {
+		var description sql.NullString
+		if err = rows.Scan(&endpoint.ClientID, &endpoint.Scope, &endpoint.Method, &endpoint.Url, &description, &endpoint.Active); err != nil {
 			log.Error().Msgf("failed to retrieve row while populating endpoint cache: %s", err)
 			continue
 		}
+		endpoint.Description = description.String
 		s.endpointCache.Set(endpoint.Url, endpoint)
 	}
 
@@ -362,7 +365,6 @@ func (tc *tokenCache) Set(tokenID string, token *Token) {
 		token:     token,
 		expiresAt: time.Now().Add(tc.ttl),
 	}
-	log.Debug().Str("token_id", tokenID).Msg("Token cached successfully")
 }
 
 // Invalidate removes a specific token from cache

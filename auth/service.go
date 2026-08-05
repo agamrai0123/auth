@@ -2,8 +2,10 @@ package auth
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"strconv"
 	"time"
@@ -207,6 +209,14 @@ func (s *authServer) Start() {
 	metricReport := mux.NewRouter()
 	metricReport.Handle("/auth-server/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{Registry: reg}))
 
+	// pprof - internal-only listener, not exposed on the public API surface
+	metricReport.HandleFunc("/debug/pprof/", pprof.Index)
+	metricReport.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	metricReport.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	metricReport.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	metricReport.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	metricReport.PathPrefix("/debug/pprof/").HandlerFunc(pprof.Index)
+
 	go func() {
 		metricsAddr := ":" + strconv.Itoa(AppConfig.MetricPort)
 		if AppConfig.HTTPSEnabled && AppConfig.CertFile != "" && AppConfig.KeyFile != "" {
@@ -243,6 +253,18 @@ func (s *authServer) Start() {
 		RecoveryMiddleware(),                            // Handle panics
 	)
 	routes(router, s)
+
+	// Periodically publish DB connection pool stats so exhaustion is visible
+	// before it causes request failures, instead of only registered and never set.
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			stats := s.db.Stats()
+			s.dbConnectionsActive.WithLabelValues("oracle").Set(float64(stats.InUse))
+			s.dbConnectionsIdle.WithLabelValues("oracle").Set(float64(stats.Idle))
+		}
+	}()
 
 	s.populateClientCache()
 	s.populateEndpointsCache()
@@ -351,6 +373,10 @@ func NewAuthServer() *authServer {
 		tokenCache:    tokenCache,
 	}
 
+	if err := authServer.prepareStatements(); err != nil {
+		log.Fatal().Err(err).Msg("failed to prepare database statements - cannot proceed")
+	}
+
 	authServer.tokenBatcher = NewTokenBatchWriter(authServer, 1000, 5*time.Second)
 
 	// Start periodic cleanup of expired token cache entries
@@ -388,6 +414,13 @@ func (s *authServer) Shutdown() error {
 	if s.tokenCache != nil {
 		log.Info().Msg("Clearing token cache...")
 		s.tokenCache.Clear()
+	}
+
+	// Close prepared statements before closing the connection pool they belong to
+	for _, stmt := range []*sql.Stmt{s.stmtClientByID, s.stmtGetTokenInfo, s.stmtGetScopeForEndpt, s.stmtRevokeToken} {
+		if stmt != nil {
+			stmt.Close()
+		}
 	}
 
 	// Close database connection

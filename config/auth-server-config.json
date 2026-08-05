@@ -8,8 +8,8 @@
     "server_port": "8080",
     "https_server_port": "8443",
     "https_enabled": true,
-    "cert_file": "certs/server.crt",
-    "key_file": "certs/server.key",
+    "cert_file": "certs/server-ecdsa.crt",
+    "key_file": "certs/server-ecdsa.key",
     "metric_port": "7071",
     "rate_limiting": {
         "global_rps": 100000,
